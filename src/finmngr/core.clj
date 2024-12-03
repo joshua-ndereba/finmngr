@@ -1,297 +1,139 @@
-(comment
-(ns finmngr.core
-  (:require [seesaw.core :as sc]
-            [seesaw.event :as se]
-            [cheshire.core :as json]))
 
-;; In-memory store for transactions
+
+(ns finmngr.core
+  (:require [clojure.data.json :as json]
+            [seesaw.core :as sc]
+            [seesaw.event :as ev])
+  (:import (javax.swing JOptionPane)))
+
+;; Global state for transactions
 (def transactions (atom []))
 
-;; Function to add a new transaction
-(defn add-transaction [type amount category description]
-  (swap! transactions conj {:type type
-                            :amount amount
-                            :category category
-                            :description description
-                            :timestamp (java.util.Date.)}))
+;; Function to save transactions to a JSON file
+(defn save-transactions-to-file []
+  (spit "transactions.json" (json/write-str @transactions :escape-unicode true)))
 
-;; Function to calculate summary
-(defn calculate-summary []
-  (let [expenses (->> @transactions (filter #(= (:type %) "expense")) (map :amount) (reduce + 0))
-        income   (->> @transactions (filter #(= (:type %) "income")) (map :amount) (reduce + 0))]
-    {:income income
-     :expenses expenses
-     :balance (- income expenses)}))
+;; Function to load transactions from a JSON file
+(defn load-transactions-from-file []
+  (try
+    (reset! transactions (vec (json/read-str (slurp "transactions.json") :key-fn keyword)))
+    (catch Exception e
+      (println "Error loading transactions from file:" (.getMessage e)))))
 
 ;; GUI for adding a transaction
 (defn show-add-transaction []
-  (let [type (sc/combobox :model ["income" "expense"])
-        amount (sc/text :columns 10)
-        category (sc/text :columns 10)
-        description (sc/text :columns 20)
-        panel (sc/grid-panel :columns 2 :items
-                              ["Type:" type
-                               "Amount:" amount
-                               "Category:" category
-                               "Description:" description])]
-    (when (= (JOptionPane/showConfirmDialog nil panel "Add Transaction" JOptionPane/OK_CANCEL_OPTION)
-             JOptionPane/OK_OPTION)
-      (try
-        (add-transaction (sc/selection type)
-                         (Double/parseDouble (sc/text amount))
-                         (sc/text category)
-                         (sc/text description))
-        (sc/alert "Transaction added successfully!")
-        (catch Exception e
-          (sc/alert "Invalid input. Please try again!"))))))
+  (let [type-field (sc/combobox :model ["income" "expense"])
+        amount-field (sc/text :text "")
+        category-field (sc/text :text "")
+        description-field (sc/text :text "")
+        panel (sc/grid-panel :columns 2
+                              :items ["Type" type-field
+                                      "Amount" amount-field
+                                      "Category" category-field
+                                      "Description" description-field])
+        dialog (sc/dialog :title "Add Transaction" 
+                          :content panel 
+                          :modal? true 
+                          :size [500 :by 200])] ;; Set dialog size here
+    ;; Show the dialog and wait for user input
+    (sc/show! dialog)
+    (when (= (JOptionPane/showConfirmDialog dialog "Confirm Transaction?" "Confirm" JOptionPane/OK_CANCEL_OPTION) JOptionPane/OK_OPTION)
+      (let [new-transaction {:type (sc/value type-field)
+                             :amount (Double/parseDouble (sc/value amount-field))
+                             :category (sc/value category-field)
+                             :description (sc/value description-field)
+                             :timestamp (str (java.time.LocalDateTime/now))}]
+        (swap! transactions conj new-transaction)
+        (save-transactions-to-file)
+        (sc/alert "Transaction added successfully!")))
+    (sc/hide! dialog)))
 
-;; GUI for listing transactions
+;; GUI for viewing transactions in a list view
 (defn show-transactions []
-  (sc/log @transactions)  ;; Log transactions for debugging
-  (let [data (map #(vector (:timestamp %) (:type %) (:category %) (:description %) (:amount %)) @transactions)
-        columns ["Date" "Type" "Category" "Description" "Amount"]
-        table (sc/table :model [columns data])]
-    (let [frame (sc/frame :title "Transactions" :content table :width 1000 :height 1000)]
-      (sc/show! table)
-      (sc/show! frame))))
-
-;; GUI for summary
-(defn show-summary []
-  (let [{:keys [income expenses balance]} (calculate-summary)
-        panel (sc/grid-panel :columns 1 :items
-                              [(str "Total Income: ksh" income)
-                               (str "Total Expenses: ksh" expenses)
-                               (str "Net Balance: ksh" balance)])
-        frame (sc/frame :title "Summary" :content panel :width 300 :height 250)]
+  (let [list-view (sc/listbox :model
+                               (vec (map-indexed
+                                     (fn [idx t]
+                                       (str idx ": Date: " (:timestamp t)
+                                            ", Type: " (:type t)
+                                            ", Category: " (:category t)
+                                            ", Description: " (:description t)
+                                            ", Amount: Ksh " (:amount t)))
+                                     @transactions)))
+        panel (sc/scrollable list-view)
+        frame (sc/frame :title "View Transactions"
+                        :content panel
+                        :width 1000
+                        :height 400)]
     (sc/show! frame)))
 
-;; Main GUI
-(defn -main [& args]
-  (let [main-frame (sc/frame :title "Finance Manager"
-                              :content
-                              (sc/vertical-panel
-                                :items [(sc/button :text "Add Transaction" :listen [:action (fn [_] (show-add-transaction))])
-                                        (sc/button :text "View Transactions" :listen [:action (fn [_] (show-transactions))])
-                                        (sc/button :text "View Summary" :listen [:action (fn [_] (show-summary))])])
-                              :on-close :exit
-                              :width 300 :height 200)]
-    (sc/show! main-frame)))
+;; GUI for showing a summary of transactions
+(comment
+(defn show-summary []
+  (let [total-income (reduce + (map :amount (filter #(= (:type %) "income") @transactions)))
+        total-expense (reduce + (map :amount (filter #(= (:type %) "expense") @transactions)))
+        balance (- total-income total-expense)]
+    (sc/alert (format "Summary:\nTotal Income: Ksh %.2f\nTotal Expense: Ksh %.2f\nBalance: Ksh %.2f"
+                      total-income total-expense balance)))))
+(defn show-summary []
+  (let [total-income (reduce + (map :amount (filter #(= (:type %) "income") @transactions)))
+        total-expense (reduce + (map :amount (filter #(= (:type %) "expense") @transactions)))]
+    (sc/alert
+      (format "Summary:\nTotal Income: %.2f\nTotal Expense: %.2f\nBalance: %.2f"
+              (double total-income)
+              (double total-expense)
+              (double (- total-income total-expense))))))
 
-
-
-
-
-
-
-(ns finmngr.core
-  (:require [seesaw.core :as sc]
-            [seesaw.event :as se]
-            [cheshire.core :as json])  ; Optional for JSON handling
-  (:import [javax.swing JOptionPane])
-  (:gen-class))
-
-;; In-memory store for transactions
-(def transactions (atom []))
-
-;; Function to add a new transaction
-(defn add-transaction [type amount category description]
-  (swap! transactions conj {:type type
-                            :amount amount
-                            :category category
-                            :description description
-                            :timestamp (java.util.Date.)}))
-
-;; Function to calculate summary
-(defn calculate-summary []
-  (let [expenses (->> @transactions (filter #(= (:type %) "expense")) (map :amount) (reduce + 0))
-        income   (->> @transactions (filter #(= (:type %) "income")) (map :amount) (reduce + 0))]
-    {:income income
-     :expenses expenses
-     :balance (- income expenses)}))
-
-;; GUI for adding a transaction
-(defn show-add-transaction []
-  (let [type (sc/combobox :model ["income" "expense"])
-        amount (sc/text :columns 10)
-        category (sc/text :columns 10)
-        description (sc/text :columns 20)
-        panel (sc/grid-panel :columns 2 :items
-                              ["Type:" type
-                               "Amount:" amount
-                               "Category:" category
-                               "Description:" description])]
-    (when (= (JOptionPane/showConfirmDialog nil panel "Add Transaction" JOptionPane/OK_CANCEL_OPTION)
-             JOptionPane/OK_OPTION)
-      (try
-        (add-transaction (sc/selection type)
-                         (Double/parseDouble (sc/text amount))
-                         (sc/text category)
-                         (sc/text description))
-        (sc/alert "Transaction added successfully!")
-        (catch Exception e
-          (sc/alert "Invalid input. Please try again!"))))))
-
-;; GUI for listing transactions
-(comment (defn show-transactions []
-  (let [data (map #(vector (:timestamp %) (:type %) (:category %) (:description %) (:amount %)) @transactions)
-        columns ["Date" "Type" "Category" "Description" "Amount"]
-        table (sc/table :model [columns data])
-        frame (sc/frame :title "Transactions" :content table :width 600 :height 400)]
+;;def for deleting a transaction
+(defn show-delete-transaction []
+  (let [data (map-indexed
+               (fn [idx t]
+                 (str idx ": Date: " (:timestamp t)
+                      ", Type: " (:type t)
+                      ", Category: " (:category t)
+                      ", Description: " (:description t)
+                      ", Amount: Ksh " (:amount t)))
+               @transactions)
+        list-view (sc/listbox :model (vec data))
+        panel (sc/grid-panel :columns 1 :items
+                             ["Select a transaction to delete:" list-view])
+        frame (sc/frame :title "Delete Transaction" :content panel :width 1000 :height 400)]
+    ;; Show the frame
     (sc/show! frame)
-    (sc.show! table))))  ;; Explicitly show the frame
-(defn show-transactions []
-  ;;(sc/log @transactions)  ;; Log transactions for debugging
+    ;; Wait for user selection
+    (sc/listen list-view :selection
+               (fn [_]
+                 (let [selected-index (.getSelectedIndex list-view)]
+                   (when (>= selected-index 0) ;; Ensure valid selection
+                     (let [confirm? (JOptionPane/showConfirmDialog
+                                     nil
+                                     "Are you sure you want to delete this transaction?"
+                                     "Confirm Delete"
+                                     JOptionPane/YES_NO_OPTION)]
+                       (when (= confirm? JOptionPane/YES_OPTION)
+                         ;; Remove the selected transaction
+                         (swap! transactions
+                                (fn [current-transactions]
+                                  (vec (remove #(= % (nth current-transactions selected-index)) current-transactions))))
+                         ;; Save changes to JSON file
+                         (save-transactions-to-file)
+                         (sc/alert "Transaction deleted successfully!")
+                         (sc/hide! frame)))))))))
 
-  (let [data (map #(vector (:timestamp %) (:type %) (:category %) (:description %) (:amount %)) @transactions)]
-   ;; (sc/log data)  ;; Log the mapped data
-
-    (let [columns ["Date" "Type" "Category" "Description" "Amount"]
-          table (sc/table :model [columns data])]
-      ;;(sc/log table)  ;; Log the table component
-
-      (let [frame (sc/frame :title "Transactions" :content table :width 800 :height 500)]
-        (sc/show! table)
-        (sc/show! frame)))))
-
-
-;; GUI for summary
-(defn show-summary []
-  (let [{:keys [income expenses balance]} (calculate-summary)
-        panel (sc/grid-panel :columns 1 :items
-                              [(str "Total Income: ksh" income)
-                               (str "Total Expenses: ksh" expenses)
-                               (str "Net Balance: ksh" balance)])
-        frame (sc/frame :title "Summary" :content panel :width 300 :height 250)]
-    (sc/show! frame)))  ;; Use a frame instead of sc/alert
-
-;; Main GUI
+;; Main function
 (defn -main [& args]
+  ;; Load existing transactions
+  (load-transactions-from-file)
+  ;; Main application GUI
   (let [main-frame (sc/frame :title "Finance Manager"
                               :content
                               (sc/vertical-panel
-                                :items [(sc/button :text "Add Transaction" :listen [:action (fn [_] (show-add-transaction))])
-                                        (sc/button :text "View Transactions" :listen [:action (fn [_] (show-transactions))])
-                                        (sc/button :text "View Summary" :listen [:action (fn [_] (show-summary))])])
+                               :items [(sc/button :text "Add Transaction" :listen [:action (fn [_] (show-add-transaction))])
+                                       (sc/button :text "View Transactions" :listen [:action (fn [_] (show-transactions))])
+                                       (sc/button :text "View Summary" :listen [:action (fn [_] (show-summary))])
+                                       (sc/button :text "Delete Transaction" :listen [:action (fn [_] (show-delete-transaction))])])
                               :on-close :exit
-                              :width 300 :height 200)]
-    (sc/show! main-frame)))
-
-)
-
-
-(ns finmngr.core
-  (:require [seesaw.core :as sc]
-            [seesaw.event :as se]
-            [cheshire.core :as json])
-  (:import [javax.swing JOptionPane])
-  (:gen-class))
-
-;; In-memory store for transactions
-(def transactions (atom []))
-
-;; Function to validate transaction input
-(defn validate-input [type amount category description]
-  (cond
-    (empty? type) (throw (Exception. "Transaction type is required."))
-    (or (nil? amount) (<= amount 0)) (throw (Exception. "Amount must be a positive number."))
-    (empty? category) (throw (Exception. "Category is required."))
-    (empty? description) (throw (Exception. "Description is required."))
-    :else true))
-
-;; Function to add a new transaction
-(defn add-transaction [type amount category description]
-  (validate-input type amount category description)
-  (swap! transactions conj {:type type
-                            :amount (double amount) ;; Ensure amount is a Double
-                            :category category
-                            :description description
-                            :timestamp (.toString (java.util.Date.))}))
-
-;; Function to calculate summary
-(defn calculate-summary []
-  (let [expenses (->> @transactions (filter #(= (:type %) "expense")) (map :amount) (reduce + 0.0))
-        income   (->> @transactions (filter #(= (:type %) "income")) (map :amount) (reduce + 0.0))]
-    {:income income
-     :expenses expenses
-     :balance (- income expenses)}))
-
-;; Save transactions to a file
-(defn save-transactions []
-  (spit "transactions.json" (json/generate-string @transactions)))
-
-;; Load transactions from a file
-(defn load-transactions []
-  (when (.exists (java.io.File. "transactions.json"))
-    (reset! transactions (json/parse-string (slurp "transactions.json") true))))
-
-;; GUI for adding a transaction
-(defn show-add-transaction []
-  (let [type (sc/combobox :model ["income" "expense"])
-        amount (sc/text :columns 10)
-        category (sc/text :columns 10)
-        description (sc/text :columns 20)
-        panel (sc/grid-panel :columns 2 :items
-                              ["Type:" type
-                               "Amount:" amount
-                               "Category:" category
-                               "Description:" description])]
-    (when (= (JOptionPane/showConfirmDialog nil panel "Add Transaction" JOptionPane/OK_CANCEL_OPTION)
-             JOptionPane/OK_OPTION)
-      (try
-        (add-transaction (sc/selection type)
-                         (Double/parseDouble (sc/text amount))
-                         (sc/text category)
-                         (sc/text description))
-        (save-transactions) ;; Save after each transaction
-        (sc/alert "Transaction added successfully!")
-        (catch Exception e
-          (sc/alert (.getMessage e)))))))
-
-;; GUI for listing transactions
-(comment(defn show-transactions []
-  (let [data (mapv #(vector (:timestamp %) (:type %) (:category %) (:description %) (:amount %))
-                   @transactions)
-        columns ["Date" "Type" "Category" "Description" "Amount"]
-        table (sc/table :model [columns data])]
-    (sc/frame :title "Transactions" :content table :width 800 :height 500 :visible? true)))
-
-)
-
-;; GUI for listing transactions in a list view
-(defn show-transactions []
-  (let [data (map #(str "Date: " (:timestamp %)
-                        ", Type: " (:type %)
-                        ", Category: " (:category %)
-                        ", Description: " (:description %)
-                        ", Amount: Ksh " (:amount %))
-                  @transactions)
-        list-view (sc/listbox :model (vec data))]
-    (sc/frame :title "Transactions"
-              :content list-view
-              :width 1000 :height 400
-              :visible? true)))
-
-
-;; GUI for summary
-(defn show-summary []
-  (let [{:keys [income expenses balance]} (calculate-summary)
-        panel (sc/grid-panel :columns 1 :items
-                              [(str "Total Income: Ksh " (format "%.2f" income))
-                               (str "Total Expenses: Ksh " (format "%.2f" expenses))
-                               (str "Net Balance: Ksh " (format "%.2f" balance))])]
-    (sc/frame :title "Summary" :content panel :width 300 :height 250 :visible? true)))
-
-;; Main GUI
-(defn -main [& args]
-  (load-transactions) ;; Load data on start
-  (let [main-frame (sc/frame :title "Finance Manager"
-                              :content
-                              (sc/vertical-panel
-                                :items [(sc/button :text "Add Transaction" :listen [:action (fn [_] (show-add-transaction))])
-                                        (sc/button :text "View Transactions" :listen [:action (fn [_] (show-transactions))])
-                                        (sc/button :text "View Summary" :listen [:action (fn [_] (show-summary))])])
-                              :on-close :exit
-                              :width 300 :height 200)]
+                              :width 300
+                              :height 250)]
     (sc/show! main-frame)))
 
 
